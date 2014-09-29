@@ -1,4 +1,5 @@
 
+import random
 import os
 import sys
 import codecs
@@ -49,16 +50,61 @@ class Stream:
         for l in lines:
             print >> f, l
 
+    def sentence(self):
+        f = codecs.open(self.stream_file(), encoding="UTF-8")
+        m = markovgen.Markov(f)
+        s = m.sentence()
+        while len(s) < 20 or len(s) > 130:
+            s = m.sentence()
+        s = self.correct(s)
+        return s
+
+    def correct(self, s):
+        # expensive implementation
+        replacements = [
+            ("@", ""),
+            ("(", ","),
+            (")", ","),
+        ]
+        for x, y in replacements:
+            s = s.replace(x, y)
+        return s
+
+    def tweet(self):
+        if os.path.exists(self.stream_file()):
+            s = self.sentence()
+            text = u"@%s %s" % (self.screen_name, s)
+            api.PostUpdate(text)
+            return s
+
+    def update(self):
+        if self.new_id is not None:
+            self.frontfill()
+        if self.max_id != -1:
+            self.backfill()
+
+    def frontfill(self):
+        print "Frontfilling", self.screen_name
+        if self.recent_id("new") < 900:
+            print "Updated too recently, skipping"
+            return
+        print "Fetching latest 200 tweets for", self.screen_name
+        s = api.GetUserTimeline(screen_name=self.screen_name, count=200, since_id=self.new_id)
+        if not s:
+            return
+        self.new_id = s[0].id
+        self.write_id("new", self.new_id)
+        self.append_stream([x.text for x in s])
+
     def backfill(self):
         print "Backfilling", self.screen_name
-        if self.max_id == "-1":
-            print "No need to backfill, we're done"
-            return
         if self.max_id is not None:
             if self.recent_id("max") < 900:
                 print "Updated too recently, skipping"
                 return
-        while True:
+        # never more than 5 requests for one user in any one
+        # window
+        for i in range(0, 5):
             print "Fetching older tweets for", self.screen_name
             try:
                 s = api.GetUserTimeline(screen_name=self.screen_name, count=200, max_id=self.max_id)
@@ -76,12 +122,32 @@ class Stream:
         self.max_id = -1
         self.write_id("max", self.max_id)
 
-def main(argv=()):
-    # phase 1, update our follower data
-    followers = api.GetFollowers()
+
+def update_all(followers):
     for u in followers:
         stream = Stream(u.screen_name)
-        stream.backfill()
+        try:
+            stream.update()
+        except twitter.TwitterError:
+            print "Rate count exceeded, stopping updates"
+            return
+
+def tweet_all(followers):
+    for u in followers:
+        if random.randint(0, 16) == 0:
+            stream = Stream(u.screen_name)
+            text = stream.tweet()
+            print "Tweeted at", u.screen_name, ":", text
+
+def main(argv=()):
+    # phase 1, update our follower data
+    try:
+        followers = api.GetFollowers()
+    except twitter.TwitterError:
+        print "Follower count rate limited, quitting"
+        return
+    update_all(followers)
+    tweet_all(followers)
 
 def blah():
     name = sys.argv[1]
